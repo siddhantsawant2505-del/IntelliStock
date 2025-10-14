@@ -1,11 +1,12 @@
 const express = require('express')
 const axios = require('axios')
 const yahooFinance = require('yahoo-finance2').default
-const Stock = require('../models/Stock')
-const User = require('../models/User')
+const NewsAPI = require('newsapi')
+const supabase = require('../config/supabase')
 const { auth } = require('../middleware/auth')
 
 const router = express.Router()
+const newsapi = new NewsAPI(process.env.NEWS_API_KEY || 'demo')
 
 router.get('/:symbol', auth, async (req, res) => {
   try {
@@ -97,14 +98,18 @@ router.post('/predict', auth, async (req, res) => {
 
       const prediction = mlResponse.data
 
-      const user = await User.findById(req.user._id)
-      user.predictions.push({
-        symbol,
-        prediction: prediction.recommendation,
-        confidence: prediction.confidence,
-        targetPrice: prediction.predictedPrice
-      })
-      await user.save()
+      await supabase
+        .from('predictions')
+        .insert([{
+          user_id: req.user.id,
+          symbol,
+          recommendation: prediction.recommendation,
+          confidence: prediction.confidence,
+          predicted_price: prediction.predictedPrice,
+          current_price: prediction.currentPrice,
+          days,
+          factors: prediction.factors
+        }])
 
       res.json(prediction)
     } catch (mlError) {
@@ -164,48 +169,45 @@ router.get('/:symbol/history', auth, async (req, res) => {
 router.get('/news/:symbol?', auth, async (req, res) => {
   try {
     const { symbol } = req.params
+    const query = symbol || 'stock market'
 
-    const mockNews = [
-      {
-        id: 1,
-        title: "Market Analysis: Tech Stocks Show Strong Performance",
-        summary: "Technology sector continues to outperform broader market indices as investors bet on AI and cloud computing growth.",
-        impact: "positive",
-        stocks: ["AAPL", "GOOGL", "MSFT", "META"],
-        timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        source: "MarketWatch",
-        url: "#"
-      },
-      {
-        id: 2,
-        title: "Federal Reserve Signals Potential Rate Changes",
-        summary: "Economic indicators suggest possible monetary policy adjustments in upcoming quarters, impacting market sentiment.",
-        impact: "neutral",
-        stocks: ["SPY", "QQQ"],
-        timestamp: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-        source: "Reuters",
-        url: "#"
-      },
-      {
-        id: 3,
-        title: "Energy Sector Faces Headwinds Amid Global Concerns",
-        summary: "Oil and gas companies navigate challenging market conditions with volatility in commodity prices.",
-        impact: "negative",
-        stocks: ["XOM", "CVX"],
-        timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-        source: "Bloomberg",
-        url: "#"
-      }
-    ]
+    try {
+      const response = await newsapi.v2.everything({
+        q: query,
+        language: 'en',
+        sortBy: 'publishedAt',
+        pageSize: 20
+      })
 
-    let filteredNews = mockNews
-    if (symbol) {
-      filteredNews = mockNews.filter(news =>
-        news.stocks.includes(symbol.toUpperCase())
-      )
+      const formattedNews = response.articles.map((article, index) => ({
+        id: index + 1,
+        title: article.title,
+        summary: article.description || article.content?.substring(0, 200) + '...',
+        impact: 'neutral',
+        stocks: symbol ? [symbol.toUpperCase()] : [],
+        timestamp: article.publishedAt,
+        source: article.source.name,
+        url: article.url,
+        imageUrl: article.urlToImage
+      }))
+
+      res.json(formattedNews)
+    } catch (newsError) {
+      console.log('News API error:', newsError.message)
+      const mockNews = [
+        {
+          id: 1,
+          title: "Market Analysis: Tech Stocks Show Strong Performance",
+          summary: "Technology sector continues to outperform broader market indices.",
+          impact: "positive",
+          stocks: symbol ? [symbol.toUpperCase()] : ["AAPL", "GOOGL", "MSFT"],
+          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+          source: "MarketWatch",
+          url: "#"
+        }
+      ]
+      res.json(mockNews)
     }
-
-    res.json(filteredNews)
   } catch (error) {
     console.error('News error:', error)
     res.status(500).json({

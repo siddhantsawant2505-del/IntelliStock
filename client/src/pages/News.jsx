@@ -1,77 +1,35 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Newspaper, TrendingUp, TrendingDown, Clock, ExternalLink } from 'lucide-react'
+import axios from 'axios'
+import toast from 'react-hot-toast'
 
 const News = () => {
   const [news, setNews] = useState([])
   const [filter, setFilter] = useState('all')
+  const [loading, setLoading] = useState(true)
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
   useEffect(() => {
-    // Mock news data
-    const mockNews = [
-      {
-        id: 1,
-        title: "Apple Reports Record Q4 Earnings, Beats Expectations",
-        summary: "Apple Inc. reported quarterly earnings that exceeded analyst expectations, driven by strong iPhone sales and services revenue growth.",
-        impact: "positive",
-        stocks: ["AAPL"],
-        timestamp: "2024-01-15T10:30:00Z",
-        source: "MarketWatch",
-        url: "#"
-      },
-      {
-        id: 2,
-        title: "Tesla Faces Production Challenges in China",
-        summary: "Tesla's Shanghai factory encounters supply chain disruptions, potentially affecting Q1 delivery targets.",
-        impact: "negative",
-        stocks: ["TSLA"],
-        timestamp: "2024-01-15T09:15:00Z",
-        source: "Reuters",
-        url: "#"
-      },
-      {
-        id: 3,
-        title: "Microsoft Azure Revenue Surges 30% Year-over-Year",
-        summary: "Microsoft's cloud computing division continues its strong growth trajectory, boosting overall company performance.",
-        impact: "positive",
-        stocks: ["MSFT"],
-        timestamp: "2024-01-15T08:45:00Z",
-        source: "Bloomberg",
-        url: "#"
-      },
-      {
-        id: 4,
-        title: "Federal Reserve Hints at Interest Rate Stability",
-        summary: "Fed officials suggest maintaining current interest rates through Q2, providing market stability signals.",
-        impact: "neutral",
-        stocks: ["SPY", "QQQ"],
-        timestamp: "2024-01-15T07:20:00Z",
-        source: "CNBC",
-        url: "#"
-      },
-      {
-        id: 5,
-        title: "Google Announces Major AI Integration Across Products",
-        summary: "Alphabet reveals comprehensive AI strategy, integrating advanced language models into search and productivity tools.",
-        impact: "positive",
-        stocks: ["GOOGL"],
-        timestamp: "2024-01-14T16:30:00Z",
-        source: "TechCrunch",
-        url: "#"
-      },
-      {
-        id: 6,
-        title: "Amazon Prime Membership Reaches New Milestone",
-        summary: "Amazon reports significant growth in Prime subscriptions, strengthening its ecosystem and recurring revenue.",
-        impact: "positive",
-        stocks: ["AMZN"],
-        timestamp: "2024-01-14T14:15:00Z",
-        source: "Wall Street Journal",
-        url: "#"
-      }
-    ]
-    setNews(mockNews)
+    fetchNews()
   }, [])
+
+  const fetchNews = async () => {
+    try {
+      setLoading(true)
+      const token = localStorage.getItem('token')
+      const response = await axios.get(`${API_URL}/api/stocks/news`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      setNews(response.data)
+    } catch (error) {
+      console.error('Failed to fetch news:', error)
+      toast.error('Failed to load news articles')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const filteredNews = news.filter(item => {
     if (filter === 'all') return true
@@ -151,9 +109,13 @@ const News = () => {
             </div>
           </div>
 
-          {/* News Grid */}
-          <div className="space-y-6">
-            {filteredNews.map((item, index) => (
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500"></div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {filteredNews.map((item, index) => (
               <motion.article
                 key={item.id}
                 initial={{ opacity: 0, y: 20 }}
@@ -220,14 +182,16 @@ const News = () => {
                 </div>
               </motion.article>
             ))}
-          </div>
+            </div>
+          )}
 
-          {/* Load More Button */}
-          <div className="text-center mt-12">
-            <button className="btn-secondary">
-              Load More News
-            </button>
-          </div>
+          {!loading && filteredNews.length > 0 && (
+            <div className="text-center mt-12">
+              <button onClick={fetchNews} className="btn-secondary">
+                Refresh News
+              </button>
+            </div>
+          )}
         </motion.div>
       </div>
     </div>

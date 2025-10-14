@@ -15,6 +15,7 @@ const Predictor = () => {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [stocks, setStocks] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
+  const [predictionChartData, setPredictionChartData] = useState(null)
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
@@ -65,6 +66,7 @@ const Predictor = () => {
     setSelectedStock(stock)
     setSearchTerm('')
     setPrediction(null)
+    setPredictionChartData(null)
     fetchHistoricalData(stock.symbol)
   }
 
@@ -90,6 +92,27 @@ const Predictor = () => {
       )
 
       setPrediction(response.data)
+
+      const lastHistoricalDate = historicalData[historicalData.length - 1]?.date
+      const lastHistoricalValue = historicalData[historicalData.length - 1]?.value
+
+      if (lastHistoricalDate && lastHistoricalValue) {
+        const predictionArray = []
+        const startDate = new Date(lastHistoricalDate)
+        const priceStep = (response.data.predictedPrice - lastHistoricalValue) / predictionDays
+
+        for (let i = 1; i <= predictionDays; i++) {
+          const futureDate = new Date(startDate)
+          futureDate.setDate(futureDate.getDate() + i)
+          predictionArray.push({
+            date: futureDate.toISOString().split('T')[0],
+            value: lastHistoricalValue + (priceStep * i)
+          })
+        }
+
+        setPredictionChartData(predictionArray)
+      }
+
       toast.success('Prediction generated successfully!')
     } catch (error) {
       console.error('Prediction error:', error)
@@ -239,8 +262,9 @@ const Predictor = () => {
                   ) : historicalData.length > 0 ? (
                     <StockChart
                       data={historicalData}
-                      title={`${selectedStock.symbol} - Historical Price`}
-                      color="#3b82f6"
+                      title={`${selectedStock.symbol} - Historical Price${predictionChartData ? ' & Prediction' : ''}`}
+                      color="#10b981"
+                      predictionData={predictionChartData}
                     />
                   ) : null}
                 </motion.div>

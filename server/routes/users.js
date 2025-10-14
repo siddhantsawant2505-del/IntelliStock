@@ -1,114 +1,158 @@
 const express = require('express')
-const User = require('../models/User')
+const supabase = require('../config/supabase')
 const { auth } = require('../middleware/auth')
 
 const router = express.Router()
 
-// Get user profile
 router.get('/profile', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-      .populate('watchlist')
-      .populate('predictions')
-    
-    res.json(user)
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, name, email, role, status, created_at')
+      .eq('id', req.user.id)
+      .single()
+
+    if (error) throw error
+
+    const { data: watchlist } = await supabase
+      .from('watchlists')
+      .select('*')
+      .eq('user_id', req.user.id)
+
+    const { data: predictions } = await supabase
+      .from('predictions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+      .limit(10)
+
+    res.json({ ...user, watchlist: watchlist || [], predictions: predictions || [] })
   } catch (error) {
     console.error('Get profile error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error fetching profile',
-      error: error.message 
+      error: error.message
     })
   }
 })
 
-// Update user profile
 router.put('/profile', auth, async (req, res) => {
   try {
     const { name, email } = req.body
-    const user = await User.findById(req.user._id)
+    const updates = {}
+    if (name) updates.name = name
+    if (email) updates.email = email
+    updates.updated_at = new Date().toISOString()
 
-    if (name) user.name = name
-    if (email) user.email = email
+    const { data: user, error } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single()
 
-    await user.save()
+    if (error) throw error
+
     res.json({ message: 'Profile updated successfully', user })
   } catch (error) {
     console.error('Update profile error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error updating profile',
-      error: error.message 
+      error: error.message
     })
   }
 })
 
-// Add stock to watchlist
 router.post('/watchlist', auth, async (req, res) => {
   try {
     const { symbol, name } = req.body
-    const user = await User.findById(req.user._id)
 
-    // Check if stock already in watchlist
-    const existingStock = user.watchlist.find(stock => stock.symbol === symbol)
-    if (existingStock) {
+    const { data: existing } = await supabase
+      .from('watchlists')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('symbol', symbol)
+      .maybeSingle()
+
+    if (existing) {
       return res.status(400).json({ message: 'Stock already in watchlist' })
     }
 
-    user.watchlist.push({ symbol, name })
-    await user.save()
+    const { data, error } = await supabase
+      .from('watchlists')
+      .insert([{ user_id: req.user.id, symbol, name }])
+      .select()
 
-    res.json({ message: 'Stock added to watchlist', watchlist: user.watchlist })
+    if (error) throw error
+
+    res.json({ message: 'Stock added to watchlist', watchlist: data })
   } catch (error) {
     console.error('Add to watchlist error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error adding to watchlist',
-      error: error.message 
+      error: error.message
     })
   }
 })
 
-// Remove stock from watchlist
 router.delete('/watchlist/:symbol', auth, async (req, res) => {
   try {
     const { symbol } = req.params
-    const user = await User.findById(req.user._id)
 
-    user.watchlist = user.watchlist.filter(stock => stock.symbol !== symbol)
-    await user.save()
+    const { error } = await supabase
+      .from('watchlists')
+      .delete()
+      .eq('user_id', req.user.id)
+      .eq('symbol', symbol)
 
-    res.json({ message: 'Stock removed from watchlist', watchlist: user.watchlist })
+    if (error) throw error
+
+    res.json({ message: 'Stock removed from watchlist' })
   } catch (error) {
     console.error('Remove from watchlist error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error removing from watchlist',
-      error: error.message 
+      error: error.message
     })
   }
 })
 
-// Get user watchlist
 router.get('/watchlist', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-    res.json(user.watchlist)
+    const { data: watchlist, error } = await supabase
+      .from('watchlists')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    res.json(watchlist || [])
   } catch (error) {
     console.error('Get watchlist error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error fetching watchlist',
-      error: error.message 
+      error: error.message
     })
   }
 })
 
-// Get user predictions
 router.get('/predictions', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-    res.json(user.predictions)
+    const { data: predictions, error } = await supabase
+      .from('predictions')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    res.json(predictions || [])
   } catch (error) {
     console.error('Get predictions error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error fetching predictions',
-      error: error.message 
+      error: error.message
     })
   }
 })

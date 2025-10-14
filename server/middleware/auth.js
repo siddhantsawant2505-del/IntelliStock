@@ -1,18 +1,23 @@
 const jwt = require('jsonwebtoken')
-const User = require('../models/User')
+const supabase = require('../config/supabase')
 
 const auth = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '')
-    
+
     if (!token) {
       return res.status(401).json({ message: 'No token, authorization denied' })
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
-    const user = await User.findById(decoded.userId).select('-password')
-    
-    if (!user) {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key')
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, name, email, role, status')
+      .eq('id', decoded.userId)
+      .maybeSingle()
+
+    if (!user || error) {
       return res.status(401).json({ message: 'Token is not valid' })
     }
 
