@@ -1,69 +1,65 @@
-const express = require('express')
-const mongoose = require('mongoose')
-const cors = require('cors')
-const helmet = require('helmet')
-const rateLimit = require('express-rate-limit')
 require('dotenv').config()
 
-const authRoutes = require('./routes/auth')
-const userRoutes = require('./routes/users')
-const stockRoutes = require('./routes/stocks')
-const adminRoutes = require('./routes/admin')
+const mongoose = require('mongoose')
+const { createApp } = require('./app')
 
-const app = express()
+const REQUIRED_ENV = ['MONGODB_URI', 'JWT_SECRET']
 
-// Security middleware
-app.use(helmet())
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? 'https://your-domain.com' : 'http://localhost:3000',
-  credentials: true
-}))
+const missing = REQUIRED_ENV.filter((key) => !process.env[key])
+if (missing.length > 0) {
+  console.error(
+    `Missing required environment variable(s): ${missing.join(', ')}.\n` +
+    'Copy server/.env.example to server/.env and fill in the values.'
+  )
+  process.exit(1)
+}
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-})
-app.use(limiter)
+if (process.env.JWT_SECRET.length < 32) {
+  console.warn('Warning: JWT_SECRET should be at least 32 characters long for real deployments.')
+}
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }))
-app.use(express.urlencoded({ extended: true }))
+const PORT = Number(process.env.PORT) || 5000
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI, {
-})
-.then(() => console.log('Connected to MongoDB'))
-.catch(err => console.error('MongoDB connection error:', err))
+const start = async () => {
+  mongoose.set('strictQuery', true)
 
-// Routes
-app.use('/api/auth', authRoutes)
-app.use('/api/users', userRoutes)
-app.use('/api/stocks', stockRoutes)
-app.use('/api/admin', adminRoutes)
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000
+    })
+    console.log('Connected to MongoDB')
+  } catch (error) {
+    // Serving API traffic without a database only produces confusing 500s.
+    console.error('MongoDB connection failed:', error.message)
+    process.exit(1)
+  }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() })
-})
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack)
-  res.status(500).json({ 
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : {}
+  const app = createApp()
+  const server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`)
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`)
   })
-})
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ message: 'Route not found' })
-})
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Stop the other process or set a different PORT.`)
+    } else {
+      console.error('Server error:', error.message)
+    }
+    process.exit(1)
+  })
 
-const PORT = process.env.PORT || 5000
+  const shutdown = (signal) => {
+    console.log(`${signal} received, shutting down`)
+    server.close(async () => {
+      await mongoose.connection.close()
+      process.exit(0)
+    })
+    setTimeout(() => process.exit(1), 10000).unref()
+  }
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-  console.log(`Environment: ${process.env.NODE_ENV}`)
-})
+  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+}
+
+start()

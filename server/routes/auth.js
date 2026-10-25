@@ -2,124 +2,93 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 const User = require('../models/User')
 const { auth } = require('../middleware/auth')
+const { asyncHandler, AppError } = require('../utils/http')
 
 const router = express.Router()
 
-// Generate JWT token
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' })
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
+const generateToken = (userId) => jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' })
+
+const requireText = (value, field, { min = 1, max = 200 } = {}) => {
+  const text = String(value ?? '').trim()
+  if (text.length < min || text.length > max) {
+    throw new AppError(400, `${field} must be between ${min} and ${max} characters`)
+  }
+  return text
 }
 
-// Register user
-router.post('/register', async (req, res) => {
-  try {
-    const { name, email, password } = req.body
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ email })
-    if (existingUser) {
-      return res.status(400).json({ message: 'User already exists with this email' })
-    }
-
-    // Create new user
-    const user = new User({ name, email, password })
-    await user.save()
-
-    // Generate token
-    const token = generateToken(user._id)
-
-    res.status(201).json({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    })
-  } catch (error) {
-    console.error('Registration error:', error)
-    res.status(500).json({ 
-      message: 'Error creating user',
-      error: error.message 
-    })
-  }
+const publicUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  status: user.status
 })
 
-// Login user
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body
+router.post('/register', asyncHandler(async (req, res) => {
+  const name = requireText(req.body?.name, 'Name', { min: 2, max: 50 })
+  const email = requireText(req.body?.email, 'Email', { max: 120 }).toLowerCase()
+  const password = String(req.body?.password ?? '')
 
-    // Find user by email
-    const user = await User.findOne({ email })
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid credentials' })
-    }
-
-    // Check password
-    const isMatch = await user.comparePassword(password)
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials' })
-    }
-
-    // Check if user is banned
-    if (user.status === 'banned') {
-      return res.status(403).json({ message: 'Account has been banned' })
-    }
-
-    // Update last login
-    user.lastLogin = new Date()
-    await user.save()
-
-    // Generate token
-    const token = generateToken(user._id)
-
-    res.json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    })
-  } catch (error) {
-    console.error('Login error:', error)
-    res.status(500).json({ 
-      message: 'Error logging in',
-      error: error.message 
-    })
+  if (!EMAIL_PATTERN.test(email)) {
+    throw new AppError(400, 'Please enter a valid email address')
   }
+  // bcrypt only hashes the first 72 bytes, so longer passwords are misleading.
+  if (password.length < 6 || password.length > 72) {
+    throw new AppError(400, 'Password must be between 6 and 72 characters')
+  }
+
+  const existingUser = await User.findOne({ email })
+  if (existingUser) {
+    throw new AppError(409, 'An account with this email already exists')
+  }
+
+  const user = await User.create({ name, email, password })
+
+  res.status(201).json({
+    message: 'User created successfully',
+    token: generateToken(user._id),
+    user: publicUser(user)
+  })
+}))
+
+router.post('/login', asyncHandler(async (req, res) => {
+  const email = requireText(req.body?.email, 'Email', { max: 120 }).toLowerCase()
+  const password = String(req.body?.password ?? '')
+
+  if (!email || !password) {
+    throw new AppError(400, 'Email and password are required')
+  }
+
+  const user = await User.findOne({ email })
+  // Same message and status for unknown email and wrong password so the
+  // endpoint cannot be used to enumerate registered accounts.
+  if (!user || !(await user.comparePassword(password))) {
+    throw new AppError(401, 'Invalid email or password')
+  }
+
+  if (user.status === 'banned') {
+    throw new AppError(403, 'This account has been suspended')
+  }
+
+  user.lastLogin = new Date()
+  await user.save()
+
+  res.json({
+    message: 'Login successful',
+    token: generateToken(user._id),
+    user: publicUser(user)
+  })
+}))
+
+router.get('/me', auth, (req, res) => {
+  res.json(req.user)
 })
 
-// Get current user
-router.get('/me', auth, async (req, res) => {
-  try {
-    res.json(req.user)
-  } catch (error) {
-    console.error('Get user error:', error)
-    res.status(500).json({ 
-      message: 'Error fetching user data',
-      error: error.message 
-    })
-  }
-})
-
-// Logout (client-side token removal)
-router.post('/logout', auth, async (req, res) => {
-  try {
-    // In a more sophisticated setup, you might want to blacklist the token
-    res.json({ message: 'Logout successful' })
-  } catch (error) {
-    console.error('Logout error:', error)
-    res.status(500).json({ 
-      message: 'Error logging out',
-      error: error.message 
-    })
-  }
+router.post('/logout', auth, (req, res) => {
+  // JWTs are stateless; the client discards the token.
+  res.json({ message: 'Logout successful' })
 })
 
 module.exports = router

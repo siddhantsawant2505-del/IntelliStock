@@ -1,5 +1,4 @@
 import { Routes, Route } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
 import Navbar from './components/Layout/Navbar'
 import Footer from './components/Layout/Footer'
 import ProtectedRoute from './components/Auth/ProtectedRoute'
@@ -14,14 +13,14 @@ import Predictor from './pages/Predictor'
 import News from './pages/News'
 import Watchlist from './pages/Watchlist'
 import Admin from './pages/Admin'
+import NotFound from './pages/NotFound'
 
 function App() {
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
       <Navbar />
       
-      <AnimatePresence mode="wait">
-        <Routes>
+      <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
@@ -55,8 +54,8 @@ function App() {
               <Admin />
             </AdminRoute>
           } />
-        </Routes>
-      </AnimatePresence>
+        <Route path="*" element={<NotFound />} />
+      </Routes>
 
       <Footer />
     </div>

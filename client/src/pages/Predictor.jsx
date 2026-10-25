@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Search, TrendingUp, Brain, Star, Calendar } from 'lucide-react'
+import { Search, TrendingUp, Brain, Star } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import StockChart from '../components/Charts/StockChart'
 import toast from 'react-hot-toast'
-import axios from 'axios'
+import api, { getErrorMessage } from '../lib/api'
 
 const Predictor = () => {
   const [searchTerm, setSearchTerm] = useState('')
@@ -16,46 +17,81 @@ const Predictor = () => {
   const [stocks, setStocks] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
 
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+  const location = useLocation()
+  const latestQuery = useRef('')
 
-  useEffect(() => {
-    if (searchTerm.length >= 2) {
-      const delaySearch = setTimeout(() => {
-        searchStocks()
-      }, 500)
-      return () => clearTimeout(delaySearch)
-    } else {
-      setStocks([])
-    }
-  }, [searchTerm])
-
-  const searchStocks = async () => {
+  const searchStocks = async (term) => {
     try {
       setSearchLoading(true)
-      const token = localStorage.getItem('token')
-      const response = await axios.get(`${API_URL}/api/stocks/search/${searchTerm}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      setStocks(response.data)
+      const { data } = await api.get(`/stocks/search/${encodeURIComponent(term)}`)
+      // Drop responses that belong to a query the user has already replaced.
+      if (term === latestQuery.current) setStocks(data)
     } catch (error) {
-      console.error('Stock search error:', error)
-      toast.error('Failed to search stocks')
+      if (term === latestQuery.current) {
+        setStocks([])
+        toast.error(getErrorMessage(error, 'Failed to search stocks'))
+      }
     } finally {
-      setSearchLoading(false)
+      if (term === latestQuery.current) setSearchLoading(false)
     }
   }
+
+  useEffect(() => {
+    const term = searchTerm.trim()
+    latestQuery.current = term
+
+    if (term.length < 2) {
+      setStocks([])
+      setSearchLoading(false)
+      return undefined
+    }
+
+    const delaySearch = setTimeout(() => {
+      searchStocks(term)
+    }, 400)
+    return () => clearTimeout(delaySearch)
+  }, [searchTerm])
+
+  // Deep link from the watchlist: "Run AI Prediction" passes the symbol along.
+  useEffect(() => {
+    const preselect = location.state?.symbol
+    if (!preselect) return undefined
+
+    let cancelled = false
+    const load = async () => {
+      try {
+        const symbolPath = encodeURIComponent(preselect)
+        const [quoteResponse, historyResponse] = await Promise.all([
+          api.get(`/stocks/${symbolPath}`),
+          api.get(`/stocks/${symbolPath}/history`, { params: { period: '1mo' } })
+        ])
+        if (cancelled) return
+        setSelectedStock({
+          symbol: quoteResponse.data.symbol,
+          name: quoteResponse.data.name,
+          price: quoteResponse.data.currentPrice
+        })
+        setHistoricalData(historyResponse.data)
+      } catch (error) {
+        if (!cancelled) toast.error(getErrorMessage(error, 'Could not load that stock'))
+      }
+    }
+    load()
+
+    return () => {
+      cancelled = true
+    }
+  }, [location.state])
 
   const fetchHistoricalData = async (symbol) => {
     try {
       setLoadingHistory(true)
-      const token = localStorage.getItem('token')
-      const response = await axios.get(`${API_URL}/api/stocks/${symbol}/history?period=1m`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const { data } = await api.get(`/stocks/${encodeURIComponent(symbol)}/history`, {
+        params: { period: '1mo' }
       })
-      setHistoricalData(response.data)
+      setHistoricalData(data)
     } catch (error) {
-      console.error('Historical data error:', error)
-      toast.error('Failed to fetch historical data')
+      toast.error(getErrorMessage(error, 'Failed to fetch historical data'))
     } finally {
       setLoadingHistory(false)
     }
@@ -77,23 +113,15 @@ const Predictor = () => {
     setLoading(true)
 
     try {
-      const token = localStorage.getItem('token')
-      const response = await axios.post(
-        `${API_URL}/api/stocks/predict`,
-        {
-          symbol: selectedStock.symbol,
-          days: predictionDays
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      )
+      const { data } = await api.post('/stocks/predict', {
+        symbol: selectedStock.symbol,
+        days: predictionDays
+      })
 
-      setPrediction(response.data)
+      setPrediction(data)
       toast.success('Prediction generated successfully!')
     } catch (error) {
-      console.error('Prediction error:', error)
-      toast.error(error.response?.data?.message || 'Failed to generate prediction')
+      toast.error(getErrorMessage(error, 'Failed to generate prediction'))
     } finally {
       setLoading(false)
     }
@@ -106,25 +134,13 @@ const Predictor = () => {
     }
 
     try {
-      const token = localStorage.getItem('token')
-      await axios.post(
-        `${API_URL}/api/users/watchlist`,
-        {
-          symbol: selectedStock.symbol,
-          name: selectedStock.name
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      )
+      await api.post('/users/watchlist', {
+        symbol: selectedStock.symbol,
+        name: selectedStock.name
+      })
       toast.success(`${selectedStock.symbol} added to watchlist!`)
     } catch (error) {
-      console.error('Add to watchlist error:', error)
-      if (error.response?.status === 400) {
-        toast.error('Stock already in watchlist')
-      } else {
-        toast.error('Failed to add stock to watchlist')
-      }
+      toast.error(getErrorMessage(error, 'Failed to add stock to watchlist'))
     }
   }
 
@@ -285,11 +301,11 @@ const Predictor = () => {
                     <div className="space-y-4">
                       <div className="p-4 bg-gray-700 rounded-lg">
                         <div className="text-sm text-gray-400 mb-1">Current Price</div>
-                        <div className="text-2xl font-bold text-white">${prediction.currentPrice.toFixed(2)}</div>
+                        <div className="text-2xl font-bold text-white">${Number(prediction.currentPrice || 0).toFixed(2)}</div>
                       </div>
                       <div className="p-4 bg-gray-700 rounded-lg">
                         <div className="text-sm text-gray-400 mb-1">Predicted Price ({predictionDays} day{predictionDays > 1 ? 's' : ''})</div>
-                        <div className="text-2xl font-bold text-primary-400">${prediction.predictedPrice.toFixed(2)}</div>
+                        <div className="text-2xl font-bold text-primary-400">${Number(prediction.predictedPrice || 0).toFixed(2)}</div>
                       </div>
                     </div>
 
@@ -317,17 +333,19 @@ const Predictor = () => {
                     </div>
                   </div>
 
-                  <div className="border-t border-gray-700 pt-6">
-                    <h4 className="text-md font-semibold text-white mb-3">Key Factors</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {prediction.factors.map((factor, index) => (
-                        <div key={index} className="flex items-center space-x-2">
-                          <div className="w-2 h-2 bg-primary-400 rounded-full"></div>
-                          <span className="text-gray-300 text-sm">{factor}</span>
-                        </div>
-                      ))}
+                  {(prediction.factors || []).length > 0 && (
+                    <div className="border-t border-gray-700 pt-6">
+                      <h4 className="text-md font-semibold text-white mb-3">Key Factors</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {prediction.factors.map((factor) => (
+                          <div key={factor} className="flex items-center space-x-2">
+                            <div className="w-2 h-2 bg-primary-400 rounded-full"></div>
+                            <span className="text-gray-300 text-sm">{factor}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="mt-6 p-4 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
                     <div className="text-yellow-400 text-sm font-medium mb-1">Disclaimer</div>

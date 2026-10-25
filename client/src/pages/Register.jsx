@@ -159,26 +159,6 @@ const Register = () => {
             </div>
           </div>
 
-          <div className="flex items-center">
-            <input
-              id="agree-terms"
-              name="agree-terms"
-              type="checkbox"
-              required
-              className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-600 rounded bg-gray-800"
-            />
-            <label htmlFor="agree-terms" className="ml-2 block text-sm text-gray-300">
-              I agree to the{' '}
-              <a href="#" className="text-primary-400 hover:text-primary-300">
-                Terms of Service
-              </a>{' '}
-              and{' '}
-              <a href="#" className="text-primary-400 hover:text-primary-300">
-                Privacy Policy
-              </a>
-            </label>
-          </div>
-
           <div>
             <button
               type="submit"

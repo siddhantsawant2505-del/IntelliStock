@@ -62,9 +62,26 @@ Python Flask server for AI predictions
 ## 🛠️ Setup Instructions
 
 ### Prerequisites
-- Node.js 16+ and npm
+- Node.js 18+ and npm
 - Python 3.8+ and pip
 - MongoDB (local or cloud)
+
+### 0. Quick start (recommended)
+
+From the repository root:
+
+```bash
+npm run install:all          # installs client + server dependencies
+cp server/.env.example server/.env   # then fill in JWT_SECRET
+npm run seed                 # creates the demo accounts listed below
+npm run dev:server           # API on http://localhost:5000
+npm run dev                  # client on http://localhost:3000
+npm run dev:ml               # optional: ML service on http://localhost:8000
+npm run lint                 # ESLint over client/src and server
+```
+
+`VITE_API_URL` is optional in development: the Vite dev server proxies `/api`
+to `http://localhost:5000`.
 
 ### 1. Client Setup
 ```bash

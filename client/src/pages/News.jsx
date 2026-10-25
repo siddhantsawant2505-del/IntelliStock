@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Newspaper, TrendingUp, TrendingDown, Clock, ExternalLink } from 'lucide-react'
-import axios from 'axios'
+import api, { getErrorMessage } from '../lib/api'
 import toast from 'react-hot-toast'
 
 const News = () => {
@@ -11,8 +11,6 @@ const News = () => {
   const [loadingMore, setLoadingMore] = useState(false)
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(false)
-
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
   useEffect(() => {
     fetchWatchlistNews(1, true)
@@ -26,24 +24,24 @@ const News = () => {
         setLoadingMore(true)
       }
 
-      const token = localStorage.getItem('token')
-      const response = await axios.get(`${API_URL}/api/stocks/news/watchlist?page=${pageNum}&limit=10`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const { data } = await api.get('/stocks/news/watchlist', {
+        params: { page: pageNum, limit: 10 }
       })
-
-      const data = response.data
 
       if (reset) {
         setNews(data.news || [])
       } else {
-        setNews(prev => [...prev, ...(data.news || [])])
+        // De-duplicate: the same article can be returned for several watchlist symbols.
+        setNews(prev => {
+          const seen = new Set(prev.map(item => item.id))
+          return [...prev, ...(data.news || []).filter(item => !seen.has(item.id))]
+        })
       }
 
-      setHasMore(data.hasMore || false)
+      setHasMore(Boolean(data.hasMore))
       setPage(pageNum)
     } catch (error) {
-      console.error('Fetch news error:', error)
-      toast.error('Failed to load news')
+      toast.error(getErrorMessage(error, 'Failed to load news'))
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -175,14 +173,24 @@ const News = () => {
                           </div>
                           <a
                             href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`Open ${item.title} on ${item.source}`}
                             className="text-primary-400 hover:text-primary-300 transition-colors"
                           >
                             <ExternalLink className="h-4 w-4" />
                           </a>
                         </div>
 
-                        <h2 className="text-xl font-semibold text-white mb-3 hover:text-primary-400 transition-colors cursor-pointer">
-                          {item.title}
+                        <h2 className="text-xl font-semibold text-white mb-3">
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:text-primary-400 transition-colors"
+                          >
+                            {item.title}
+                          </a>
                         </h2>
 
                         <p className="text-gray-300 mb-4 leading-relaxed">

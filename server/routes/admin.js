@@ -1,249 +1,248 @@
 const express = require('express')
+const mongoose = require('mongoose')
 const User = require('../models/User')
 const Stock = require('../models/Stock')
 const { adminAuth } = require('../middleware/auth')
+const { asyncHandler, AppError } = require('../utils/http')
+const { parseIntInRange, escapeRegex } = require('../utils/validate')
 
 const router = express.Router()
 
-// Get admin dashboard stats
-router.get('/stats', adminAuth, async (req, res) => {
-  try {
-    const totalUsers = await User.countDocuments()
-    const activeUsers = await User.countDocuments({ status: 'active' })
-    const bannedUsers = await User.countDocuments({ status: 'banned' })
-    const totalStocks = await Stock.countDocuments()
+const USER_STATUSES = ['active', 'banned', 'pending']
 
-    const allUsers = await User.find()
-    const totalPredictions = allUsers.reduce((sum, user) => sum + (user.predictions?.length || 0), 0)
-
-    const usersWithPredictions = allUsers.filter(user => user.predictions && user.predictions.length > 0)
-    let averageAccuracy = 0
-    if (usersWithPredictions.length > 0) {
-      const totalConfidence = usersWithPredictions.reduce((sum, user) => {
-        const userAvgConfidence = user.predictions.reduce((pSum, p) => pSum + (p.confidence || 0), 0) / user.predictions.length
-        return sum + userAvgConfidence
-      }, 0)
-      averageAccuracy = Math.round(totalConfidence / usersWithPredictions.length)
-    }
-
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
-    const dailyActiveUsers = await User.countDocuments({ lastLogin: { $gte: oneDayAgo } })
-
-    const stats = {
-      totalUsers,
-      activeUsers,
-      bannedUsers,
-      totalStocks,
-      totalPredictions,
-      averageAccuracy,
-      dailyActiveUsers,
-      revenue: 0,
-      systemAlerts: 0
-    }
-
-    res.json(stats)
-  } catch (error) {
-    console.error('Admin stats error:', error)
-    res.status(500).json({
-      message: 'Error fetching admin stats',
-      error: error.message
-    })
+const toObjectId = (value, field) => {
+  if (!mongoose.isValidObjectId(value)) {
+    throw new AppError(400, `${field} is not a valid id`)
   }
-})
+  return value
+}
 
-// Get all users
-router.get('/users', adminAuth, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, status, search } = req.query
-    
-    let query = {}
-    if (status) query.status = status
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ]
+const averageOf = (values) => {
+  if (values.length === 0) return 0
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+const dayKey = (date) => new Date(date).toISOString().split('T')[0]
+
+router.get('/stats', adminAuth, asyncHandler(async (req, res) => {
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+
+  const [totalUsers, activeUsers, bannedUsers, totalStocks, dailyActiveUsers, confidenceRows] =
+    await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ status: 'active' }),
+      User.countDocuments({ status: 'banned' }),
+      Stock.countDocuments(),
+      User.countDocuments({ lastLogin: { $gte: oneDayAgo } }),
+      User.aggregate([
+        { $unwind: '$predictions' },
+        { $group: { _id: null, total: { $sum: 1 }, avgConfidence: { $avg: '$predictions.confidence' } } }
+      ])
+    ])
+
+  const totalPredictions = confidenceRows[0]?.total || 0
+  // This is the models' self-reported confidence, not measured accuracy.
+  const averageConfidence = Math.round(confidenceRows[0]?.avgConfidence || 0)
+
+  res.json({
+    totalUsers,
+    activeUsers,
+    bannedUsers,
+    totalStocks,
+    totalPredictions,
+    averageConfidence,
+    dailyActiveUsers
+  })
+}))
+
+router.get('/users', adminAuth, asyncHandler(async (req, res) => {
+  const page = parseIntInRange(req.query.page, { min: 1, max: 10000, field: 'page', fallback: 1 })
+  const limit = parseIntInRange(req.query.limit, { min: 1, max: 100, field: 'limit', fallback: 10 })
+  const { status, search } = req.query
+
+  const query = {}
+  if (status) {
+    if (!USER_STATUSES.includes(status)) {
+      throw new AppError(400, `status must be one of: ${USER_STATUSES.join(', ')}`)
     }
+    query.status = status
+  }
 
-    const users = await User.find(query)
+  if (search) {
+    const term = String(search).trim().slice(0, 60)
+    if (term) {
+      // Escaped so characters like "(" or ".*" cannot become a regex or a
+      // catastrophic-backtracking pattern.
+      const pattern = new RegExp(escapeRegex(term), 'i')
+      query.$or = [{ name: pattern }, { email: pattern }]
+    }
+  }
+
+  const [users, total] = await Promise.all([
+    User.find(query)
       .select('-password')
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
       .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(query)
+  ])
 
-    const total = await User.countDocuments(query)
+  res.json({
+    users,
+    totalPages: Math.ceil(total / limit),
+    currentPage: page,
+    total
+  })
+}))
 
-    res.json({
-      users,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    })
-  } catch (error) {
-    console.error('Get users error:', error)
-    res.status(500).json({ 
-      message: 'Error fetching users',
-      error: error.message 
-    })
+router.put('/users/:userId/status', adminAuth, asyncHandler(async (req, res) => {
+  const userId = toObjectId(req.params.userId, 'userId')
+  const { status } = req.body || {}
+
+  if (!USER_STATUSES.includes(status)) {
+    throw new AppError(400, `status must be one of: ${USER_STATUSES.join(', ')}`)
   }
-})
 
-// Update user status
-router.put('/users/:userId/status', adminAuth, async (req, res) => {
-  try {
-    const { userId } = req.params
-    const { status } = req.body
-
-    if (!['active', 'banned', 'pending'].includes(status)) {
-      return res.status(400).json({ message: 'Invalid status' })
-    }
-
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { status },
-      { new: true }
-    ).select('-password')
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' })
-    }
-
-    res.json({ message: 'User status updated', user })
-  } catch (error) {
-    console.error('Update user status error:', error)
-    res.status(500).json({ 
-      message: 'Error updating user status',
-      error: error.message 
-    })
+  if (String(userId) === String(req.user._id) && status !== 'active') {
+    throw new AppError(400, 'You cannot ban or deactivate your own admin account')
   }
-})
 
-// Delete user
-router.delete('/users/:userId', adminAuth, async (req, res) => {
-  try {
-    const { userId } = req.params
-
-    const user = await User.findByIdAndDelete(userId)
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' })
-    }
-
-    res.json({ message: 'User deleted successfully' })
-  } catch (error) {
-    console.error('Delete user error:', error)
-    res.status(500).json({ 
-      message: 'Error deleting user',
-      error: error.message 
-    })
+  const user = await User.findByIdAndUpdate(userId, { status }, { new: true }).select('-password')
+  if (!user) {
+    throw new AppError(404, 'User not found')
   }
-})
 
-// Get system analytics
-router.get('/analytics', adminAuth, async (req, res) => {
-  try {
-    const users = await User.find().sort({ createdAt: 1 })
+  res.json({ message: 'User status updated', user })
+}))
 
-    const userGrowthMap = {}
-    users.forEach(user => {
-      const date = user.createdAt.toISOString().split('T')[0]
-      userGrowthMap[date] = (userGrowthMap[date] || 0) + 1
-    })
+router.delete('/users/:userId', adminAuth, asyncHandler(async (req, res) => {
+  const userId = toObjectId(req.params.userId, 'userId')
 
-    let cumulativeUsers = 0
-    const userGrowth = []
-    const last7Days = []
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-      last7Days.push(date)
-    }
-
-    last7Days.forEach(date => {
-      Object.keys(userGrowthMap).forEach(key => {
-        if (key <= date) {
-          cumulativeUsers = Object.keys(userGrowthMap)
-            .filter(k => k <= date)
-            .reduce((sum, k) => sum + userGrowthMap[k], 0)
-        }
-      })
-      userGrowth.push({ date, users: cumulativeUsers })
-    })
-
-    const allUsers = await User.find()
-    const allPredictions = allUsers.flatMap(user => user.predictions || [])
-
-    const excellentCount = allPredictions.filter(p => p.confidence >= 90).length
-    const goodCount = allPredictions.filter(p => p.confidence >= 80 && p.confidence < 90).length
-    const averageCount = allPredictions.filter(p => p.confidence >= 70 && p.confidence < 80).length
-    const poorCount = allPredictions.filter(p => p.confidence < 70).length
-
-    const total = allPredictions.length || 1
-    const predictionAccuracy = [
-      { name: 'Excellent (90%+)', value: Math.round((excellentCount / total) * 100), color: '#10b981' },
-      { name: 'Good (80-89%)', value: Math.round((goodCount / total) * 100), color: '#3b82f6' },
-      { name: 'Average (70-79%)', value: Math.round((averageCount / total) * 100), color: '#f59e0b' },
-      { name: 'Poor (<70%)', value: Math.round((poorCount / total) * 100), color: '#ef4444' }
-    ]
-
-    const analytics = {
-      userGrowth,
-      predictionAccuracy
-    }
-
-    res.json(analytics)
-  } catch (error) {
-    console.error('Analytics error:', error)
-    res.status(500).json({
-      message: 'Error fetching analytics',
-      error: error.message
-    })
+  if (String(userId) === String(req.user._id)) {
+    throw new AppError(400, 'You cannot delete your own admin account')
   }
-})
 
-// Get system activity logs
-router.get('/activity', adminAuth, async (req, res) => {
-  try {
-    // Mock activity data
-    const activities = [
-      {
-        id: 1,
-        time: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-        event: 'New user registration: john.doe@email.com',
-        type: 'info'
-      },
-      {
-        id: 2,
-        time: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-        event: 'High prediction accuracy alert: AAPL model 95%',
-        type: 'success'
-      },
-      {
-        id: 3,
-        time: new Date(Date.now() - 75 * 60 * 1000).toISOString(),
-        event: 'System backup completed successfully',
-        type: 'success'
-      },
-      {
-        id: 4,
-        time: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
-        event: 'API rate limit exceeded for user ID: 1247',
-        type: 'warning'
-      },
-      {
-        id: 5,
-        time: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
-        event: 'Daily model training initiated',
-        type: 'info'
-      }
-    ]
-
-    res.json(activities)
-  } catch (error) {
-    console.error('Activity logs error:', error)
-    res.status(500).json({ 
-      message: 'Error fetching activity logs',
-      error: error.message 
-    })
+  const user = await User.findByIdAndDelete(userId)
+  if (!user) {
+    throw new AppError(404, 'User not found')
   }
-})
+
+  res.json({ message: 'User deleted successfully' })
+}))
+
+router.get('/analytics', adminAuth, asyncHandler(async (req, res) => {
+  const since = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)
+  since.setHours(0, 0, 0, 0)
+
+  const [signups, predictions] = await Promise.all([
+    User.find({ createdAt: { $gte: since } }).select('createdAt').lean(),
+    User.aggregate([
+      { $unwind: '$predictions' },
+      { $match: { 'predictions.createdAt': { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$predictions.createdAt' } }, count: { $sum: 1 } } }
+    ])
+  ])
+
+  const signUpsByDay = signups.reduce((map, user) => {
+    const key = dayKey(user.createdAt)
+    map[key] = (map[key] || 0) + 1
+    return map
+  }, {})
+
+  const predictionsByDay = predictions.reduce((map, row) => {
+    map[row._id] = row.count
+    return map
+  }, {})
+
+  // A single pass over the last seven days, instead of re-summing all history
+  // for every day (which was O(days * users)).
+  const totalUsers = await User.countDocuments()
+  const days = []
+  for (let i = 6; i >= 0; i -= 1) {
+    const date = new Date(Date.now() - i * 24 * 60 * 60 * 1000)
+    days.push(date.toISOString().split('T')[0])
+  }
+
+  const signUpsInWindow = Object.values(signUpsByDay).reduce((sum, count) => sum + count, 0)
+  let runningTotal = totalUsers - signUpsInWindow
+
+  const userGrowth = days.map((date) => {
+    runningTotal += signUpsByDay[date] || 0
+    return { date, users: runningTotal, signups: signUpsByDay[date] || 0 }
+  })
+
+  const predictionVolume = days.map((date) => ({
+    date,
+    predictions: predictionsByDay[date] || 0
+  }))
+
+  const confidenceBuckets = [
+    { name: 'Excellent (90%+)', test: (c) => c >= 90, color: '#10b981' },
+    { name: 'Good (80-89%)', test: (c) => c >= 80 && c < 90, color: '#3b82f6' },
+    { name: 'Average (70-79%)', test: (c) => c >= 70 && c < 80, color: '#f59e0b' },
+    { name: 'Low (<70%)', test: (c) => c < 70, color: '#ef4444' }
+  ]
+
+  const allConfidences = (
+    await User.aggregate([{ $unwind: '$predictions' }, { $group: { _id: null, values: { $push: '$predictions.confidence' } } }])
+  )[0]?.values || []
+
+  const total = allConfidences.length || 1
+  const predictionAccuracy = confidenceBuckets.map((bucket) => ({
+    name: bucket.name,
+    value: Math.round((allConfidences.filter((c) => bucket.test(c || 0)).length / total) * 100),
+    color: bucket.color
+  }))
+
+  res.json({
+    userGrowth,
+    predictionVolume,
+    predictionAccuracy,
+    averageConfidence: Math.round(averageOf(allConfidences.filter((c) => typeof c === 'number'))),
+    totalPredictions: allConfidences.length
+  })
+}))
+
+router.get('/activity', adminAuth, asyncHandler(async (req, res) => {
+  const limit = parseIntInRange(req.query.limit, { min: 1, max: 50, field: 'limit', fallback: 10 })
+
+  const [newUsers, recentPredictions, bannedUsers] = await Promise.all([
+    User.find().select('name email createdAt status').sort({ createdAt: -1 }).limit(limit).lean(),
+    User.aggregate([
+      { $unwind: '$predictions' },
+      { $sort: { 'predictions.createdAt': -1 } },
+      { $limit: limit },
+      { $project: { name: 1, email: 1, prediction: '$predictions' } }
+    ]),
+    User.find({ status: 'banned' }).select('name email updatedAt').sort({ updatedAt: -1 }).limit(5).lean()
+  ])
+
+  const activities = [
+    ...newUsers.map((user) => ({
+      id: `user-${user._id}`,
+      time: user.createdAt,
+      event: `New user registration: ${user.email}`,
+      type: 'info'
+    })),
+    ...recentPredictions.map((row) => ({
+      id: `prediction-${row._id}-${row.prediction.createdAt}`,
+      time: row.prediction.createdAt,
+      event: `${row.email || row.name || 'A user'} ran a prediction for ${row.prediction.symbol} (${row.prediction.confidence || 0}% confidence)`,
+      type: 'success'
+    })),
+    ...bannedUsers.map((user) => ({
+      id: `banned-${user._id}`,
+      time: user.updatedAt,
+      event: `Account suspended: ${user.email}`,
+      type: 'warning'
+    }))
+  ]
+    .filter((activity) => activity.time)
+    .sort((a, b) => new Date(b.time) - new Date(a.time))
+    .slice(0, limit)
+
+  res.json(activities)
+}))
 
 module.exports = router

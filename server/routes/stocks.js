@@ -1,322 +1,252 @@
 const express = require('express')
 const axios = require('axios')
 const createYahooFinanceClient = require('../utils/yahooFinanceClient')
-const Stock = require('../models/Stock')
 const User = require('../models/User')
 const { auth } = require('../middleware/auth')
+const { asyncHandler, AppError } = require('../utils/http')
+const { parseSymbol, parseIntInRange, parsePagination } = require('../utils/validate')
 
-const yahooFinance = createYahooFinanceClient({
-  timeout: 5000,
-  maxRetries: 3,
-  retryDelay: 1000
-})
+const yahooFinance = createYahooFinanceClient()
 
 const router = express.Router()
 
-router.get('/:symbol', auth, async (req, res) => {
-  try {
-    const { symbol } = req.params
+const POSITIVE_WORDS = [
+  'surge', 'gain', 'rise', 'jump', 'beat', 'exceed', 'growth', 'profit',
+  'success', 'record', 'high', 'boost', 'strong', 'positive', 'rally',
+  'upgrade', 'outperform', 'bullish', 'expand', 'breakthrough'
+]
+const NEGATIVE_WORDS = [
+  'fall', 'drop', 'decline', 'loss', 'miss', 'weak', 'concern', 'risk',
+  'low', 'cut', 'negative', 'downgrade', 'bearish', 'challenge',
+  'struggle', 'plunge', 'crash', 'slump', 'warning'
+]
 
-    const quote = await yahooFinance.quote(symbol.toUpperCase())
-
-    if (!quote) {
-      return res.status(404).json({ message: 'Stock not found' })
-    }
-
-    const stockData = {
-      symbol: quote.symbol,
-      name: quote.longName || quote.shortName || quote.symbol,
-      currentPrice: quote.regularMarketPrice,
-      change: quote.regularMarketChange,
-      changePercent: quote.regularMarketChangePercent,
-      volume: quote.regularMarketVolume,
-      marketCap: quote.marketCap,
-      sector: quote.sector || 'N/A',
-      high: quote.regularMarketDayHigh,
-      low: quote.regularMarketDayLow,
-      open: quote.regularMarketOpen,
-      previousClose: quote.regularMarketPreviousClose
-    }
-
-    res.json(stockData)
-  } catch (error) {
-    console.error('Get stock error:', error)
-    res.status(500).json({
-      message: 'Error fetching stock data',
-      error: error.message
-    })
-  }
-})
-
-router.get('/search/:query', auth, async (req, res) => {
-  try {
-    const { query } = req.params
-
-    const searchResults = await yahooFinance.search(query)
-
-    const stocks = await Promise.all(
-      searchResults.quotes
-        .filter(result => result.quoteType === 'EQUITY')
-        .slice(0, 10)
-        .map(async (result) => {
-          try {
-            const quote = await yahooFinance.quote(result.symbol)
-            return {
-              symbol: result.symbol,
-              name: result.longname || result.shortname || result.symbol,
-              price: quote.regularMarketPrice,
-              exchange: result.exchDisp
-            }
-          } catch (err) {
-            console.error(`Error fetching quote for ${result.symbol}:`, err)
-            return {
-              symbol: result.symbol,
-              name: result.longname || result.shortname || result.symbol,
-              price: null,
-              exchange: result.exchDisp
-            }
-          }
-        })
-    )
-
-    res.json(stocks.filter(stock => stock.price !== null))
-  } catch (error) {
-    console.error('Search stocks error:', error)
-    res.status(500).json({
-      message: 'Error searching stocks',
-      error: error.message
-    })
-  }
-})
-
-router.post('/predict', auth, async (req, res) => {
-  try {
-    const { symbol, days = 1 } = req.body
-
-    try {
-      const mlResponse = await axios.post(`${process.env.ML_SERVER_URL}/predict`, {
-        symbol,
-        days
-      }, {
-        timeout: 10000
-      })
-
-      const prediction = mlResponse.data
-
-      const user = await User.findById(req.user._id)
-      user.predictions.push({
-        symbol,
-        prediction: prediction.recommendation,
-        confidence: prediction.confidence,
-        targetPrice: prediction.predictedPrice
-      })
-      await user.save()
-
-      res.json(prediction)
-    } catch (mlError) {
-      console.log('ML server error:', mlError.message)
-      return res.status(503).json({
-        message: 'ML prediction service is currently unavailable. Please ensure the ML server is running.',
-        error: mlError.message
-      })
-    }
-  } catch (error) {
-    console.error('Prediction error:', error)
-    res.status(500).json({
-      message: 'Error generating prediction',
-      error: error.message
-    })
-  }
-})
-
-router.get('/:symbol/history', auth, async (req, res) => {
-  try {
-    const { symbol } = req.params
-    const { period = '1mo' } = req.query
-
-    const periodMap = {
-      '7d': 7,
-      '1mo': 30,
-      '3mo': 90,
-      '1y': 365
-    }
-
-    const days = periodMap[period] || 30
-    const period1 = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-
-    const chartData = await yahooFinance.chart(symbol, {
-      period1,
-      interval: '1d'
-    })
-
-    const historicalData = chartData.quotes.map(item => ({
-      date: new Date(item.date * 1000).toISOString().split('T')[0],
-      value: item.close,
-      open: item.open,
-      high: item.high,
-      low: item.low,
-      volume: item.volume
-    }))
-
-    res.json(historicalData)
-  } catch (error) {
-    console.error('Historical data error:', error)
-    res.status(500).json({
-      message: 'Error fetching historical data',
-      error: error.message
-    })
-  }
-})
-
-router.get('/news/watchlist', auth, async (req, res) => {
-  try {
-    const { page = 1, limit = 10 } = req.query
-    const user = await User.findById(req.user._id)
-    const watchlist = user.watchlist
-
-    if (!watchlist || watchlist.length === 0) {
-      return res.json({ news: [], hasMore: false, total: 0 })
-    }
-
-    const allNews = []
-    const newsIdMap = new Map()
-
-    for (const stock of watchlist) {
-      try {
-        const newsResult = await yahooFinance.search(stock.symbol, {
-          newsCount: 10
-        })
-
-        if (newsResult && newsResult.news && newsResult.news.length > 0) {
-          const stockNews = newsResult.news
-            .filter(article => article && article.title && article.link)
-            .map(article => {
-              const sentiment = analyzeSentiment(article.title)
-
-              return {
-                id: article.uuid || `${stock.symbol}-${article.providerPublishTime || Date.now()}`,
-                title: article.title,
-                summary: article.summary || article.title,
-                impact: sentiment,
-                stocks: [stock.symbol],
-                timestamp: article.providerPublishTime
-                  ? new Date(article.providerPublishTime * 1000).toISOString()
-                  : new Date().toISOString(),
-                source: article.publisher || 'Yahoo Finance',
-                url: article.link
-              }
-            })
-
-          stockNews.forEach(news => {
-            if (!newsIdMap.has(news.id)) {
-              newsIdMap.set(news.id, news)
-              allNews.push(news)
-            } else {
-              const existing = newsIdMap.get(news.id)
-              if (!existing.stocks.includes(stock.symbol)) {
-                existing.stocks.push(stock.symbol)
-              }
-            }
-          })
-        }
-      } catch (err) {
-        console.error(`Error fetching news for ${stock.symbol}:`, err.message)
-      }
-    }
-
-    allNews.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-
-    const startIndex = (page - 1) * limit
-    const endIndex = startIndex + parseInt(limit)
-    const paginatedNews = allNews.slice(startIndex, endIndex)
-    const hasMore = endIndex < allNews.length
-
-    res.json({
-      news: paginatedNews,
-      hasMore,
-      total: allNews.length,
-      page: parseInt(page),
-      totalPages: Math.ceil(allNews.length / limit)
-    })
-  } catch (error) {
-    console.error('Watchlist news error:', error)
-    res.status(500).json({
-      message: 'Error fetching watchlist news',
-      error: error.message
-    })
-  }
-})
-
-function analyzeSentiment(title) {
+const analyzeSentiment = (title = '') => {
   const lowerTitle = title.toLowerCase()
-
-  const positiveWords = ['surge', 'gain', 'rise', 'jump', 'beat', 'exceed', 'growth', 'profit',
-                        'success', 'record', 'high', 'boost', 'strong', 'positive', 'rally',
-                        'upgrade', 'outperform', 'bullish', 'expand', 'breakthrough']
-  const negativeWords = ['fall', 'drop', 'decline', 'loss', 'miss', 'weak', 'concern', 'risk',
-                         'low', 'cut', 'negative', 'downgrade', 'bearish', 'challenge',
-                         'struggle', 'plunge', 'crash', 'slump', 'warning']
-
-  const positiveCount = positiveWords.filter(word => lowerTitle.includes(word)).length
-  const negativeCount = negativeWords.filter(word => lowerTitle.includes(word)).length
+  const positiveCount = POSITIVE_WORDS.filter((word) => lowerTitle.includes(word)).length
+  const negativeCount = NEGATIVE_WORDS.filter((word) => lowerTitle.includes(word)).length
 
   if (positiveCount > negativeCount) return 'positive'
   if (negativeCount > positiveCount) return 'negative'
   return 'neutral'
 }
 
-router.get('/news/:symbol?', auth, async (req, res) => {
-  try {
-    const { symbol } = req.params
-
-    const mockNews = [
-      {
-        id: 1,
-        title: "Market Analysis: Tech Stocks Show Strong Performance",
-        summary: "Technology sector continues to outperform broader market indices as investors bet on AI and cloud computing growth.",
-        impact: "positive",
-        stocks: ["AAPL", "GOOGL", "MSFT", "META"],
-        timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-        source: "MarketWatch",
-        url: "#"
-      },
-      {
-        id: 2,
-        title: "Federal Reserve Signals Potential Rate Changes",
-        summary: "Economic indicators suggest possible monetary policy adjustments in upcoming quarters, impacting market sentiment.",
-        impact: "neutral",
-        stocks: ["SPY", "QQQ"],
-        timestamp: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
-        source: "Reuters",
-        url: "#"
-      },
-      {
-        id: 3,
-        title: "Energy Sector Faces Headwinds Amid Global Concerns",
-        summary: "Oil and gas companies navigate challenging market conditions with volatility in commodity prices.",
-        impact: "negative",
-        stocks: ["XOM", "CVX"],
-        timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString(),
-        source: "Bloomberg",
-        url: "#"
-      }
-    ]
-
-    let filteredNews = mockNews
-    if (symbol) {
-      filteredNews = mockNews.filter(news =>
-        news.stocks.includes(symbol.toUpperCase())
-      )
-    }
-
-    res.json(filteredNews)
-  } catch (error) {
-    console.error('News error:', error)
-    res.status(500).json({
-      message: 'Error fetching news',
-      error: error.message
-    })
-  }
+const toNewsItem = (article, symbols) => ({
+  id: article.uuid || `${symbols[0]}-${article.providerPublishTime || article.title}`,
+  title: article.title,
+  summary: article.summary || article.title,
+  impact: analyzeSentiment(article.title),
+  stocks: symbols,
+  timestamp: article.providerPublishTime
+    ? new Date(article.providerPublishTime * 1000).toISOString()
+    : new Date().toISOString(),
+  source: article.publisher || 'Yahoo Finance',
+  url: article.link
 })
 
+const fetchNewsForSymbol = async (symbol, newsCount = 10) => {
+  const result = await yahooFinance.search(symbol, { newsCount })
+  return (result?.news || [])
+    .filter((article) => article && article.title && article.link)
+    .map((article) => toNewsItem(article, [symbol]))
+}
+
+// NOTE: static paths must be registered before '/:symbol', otherwise Express
+// matches "/search/..." as symbol="search" and the route never runs.
+router.get('/search/:query', auth, asyncHandler(async (req, res) => {
+  const query = String(req.params.query || '').trim()
+  if (query.length < 1 || query.length > 40) {
+    throw new AppError(400, 'Search query must be between 1 and 40 characters')
+  }
+
+  const searchResults = await yahooFinance.search(query)
+  const matches = (searchResults?.quotes || [])
+    .filter((result) => result.quoteType === 'EQUITY' && result.symbol)
+    .slice(0, 10)
+
+  if (matches.length === 0) {
+    return res.json([])
+  }
+
+  const symbols = matches.map((result) => result.symbol)
+  let quotes = []
+  try {
+    const quoteResult = await yahooFinance.quote(symbols)
+    quotes = Array.isArray(quoteResult) ? quoteResult : [quoteResult]
+  } catch (error) {
+    console.warn('Batch quote for search failed:', error.message)
+  }
+
+  const priceBySymbol = new Map(
+    quotes.filter(Boolean).map((quote) => [quote.symbol, quote.regularMarketPrice])
+  )
+
+  res.json(matches.map((result) => ({
+    symbol: result.symbol,
+    name: result.longname || result.shortname || result.symbol,
+    price: priceBySymbol.get(result.symbol) ?? null,
+    exchange: result.exchDisp || result.exchange || 'N/A'
+  })))
+}))
+
+router.get('/news/watchlist', auth, asyncHandler(async (req, res) => {
+  const { page, limit } = parsePagination(req.query, { defaultLimit: 10, maxLimit: 50 })
+
+  const user = await User.findById(req.user._id).select('watchlist')
+  const watchlist = user?.watchlist || []
+
+  if (watchlist.length === 0) {
+    return res.json({ news: [], hasMore: false, total: 0, page, totalPages: 0 })
+  }
+
+  const perSymbolNews = await Promise.all(
+    watchlist.map(async (stock) => {
+      try {
+        return await fetchNewsForSymbol(stock.symbol, 10)
+      } catch (error) {
+        console.warn(`News lookup failed for ${stock.symbol}: ${error.message}`)
+        return []
+      }
+    })
+  )
+
+  const newsById = new Map()
+  perSymbolNews.flat().forEach((item) => {
+    const existing = newsById.get(item.id)
+    if (!existing) {
+      newsById.set(item.id, item)
+      return
+    }
+    item.stocks.forEach((symbol) => {
+      if (!existing.stocks.includes(symbol)) existing.stocks.push(symbol)
+    })
+  })
+
+  const allNews = [...newsById.values()]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+
+  const startIndex = (page - 1) * limit
+  res.json({
+    news: allNews.slice(startIndex, startIndex + limit),
+    hasMore: startIndex + limit < allNews.length,
+    total: allNews.length,
+    page,
+    totalPages: Math.ceil(allNews.length / limit)
+  })
+}))
+
+router.get('/news/:symbol', auth, asyncHandler(async (req, res) => {
+  const symbol = parseSymbol(req.params.symbol)
+  const news = await fetchNewsForSymbol(symbol, 20)
+  res.json(news)
+}))
+
+router.post('/predict', auth, asyncHandler(async (req, res) => {
+  const symbol = parseSymbol(req.body?.symbol)
+  const days = parseIntInRange(req.body?.days, {
+    min: 1,
+    max: 30,
+    field: 'days',
+    fallback: 1
+  })
+
+  const mlServerUrl = process.env.ML_SERVER_URL
+  if (!mlServerUrl) {
+    throw new AppError(503, 'Prediction service is not configured (ML_SERVER_URL is unset)')
+  }
+
+  let prediction
+  try {
+    const mlResponse = await axios.post(
+      `${mlServerUrl.replace(/\/+$/, '')}/predict`,
+      { symbol, days },
+      { timeout: 15000 }
+    )
+    prediction = mlResponse.data
+  } catch (error) {
+    console.warn('ML server error:', error.message)
+    throw new AppError(503, 'ML prediction service is currently unavailable. Please start the ML server and try again.')
+  }
+
+  if (!prediction || typeof prediction !== 'object') {
+    throw new AppError(502, 'Prediction service returned an invalid response')
+  }
+
+  // $push avoids the read-modify-save race on the whole user document.
+  await User.updateOne(
+    { _id: req.user._id },
+    {
+      $push: {
+        predictions: {
+          symbol,
+          prediction: prediction.recommendation,
+          confidence: prediction.confidence,
+          targetPrice: prediction.predictedPrice
+        }
+      }
+    }
+  )
+
+  res.json(prediction)
+}))
+
+router.get('/:symbol/history', auth, asyncHandler(async (req, res) => {
+  const symbol = parseSymbol(req.params.symbol)
+  const periodMap = { '7d': 7, '1mo': 30, '3mo': 90, '1y': 365 }
+  const period = String(req.query.period || '1mo')
+  const days = periodMap[period]
+
+  if (!days) {
+    throw new AppError(400, `period must be one of: ${Object.keys(periodMap).join(', ')}`)
+  }
+
+  const chartData = await yahooFinance.chart(symbol, {
+    period1: new Date(Date.now() - days * 24 * 60 * 60 * 1000),
+    interval: '1d'
+  })
+
+  const quotes = chartData?.quotes || []
+  if (quotes.length === 0) {
+    throw new AppError(404, `No historical data available for ${symbol}`)
+  }
+
+  res.json(
+    quotes
+      .filter((item) => item.close !== null && item.close !== undefined)
+      .map((item) => ({
+        date: new Date(item.date * 1000).toISOString().split('T')[0],
+        value: item.close,
+        open: item.open,
+        high: item.high,
+        low: item.low,
+        volume: item.volume
+      }))
+  )
+}))
+
+router.get('/:symbol', auth, asyncHandler(async (req, res) => {
+  const symbol = parseSymbol(req.params.symbol)
+  const quote = await yahooFinance.quote(symbol)
+
+  if (!quote) {
+    throw new AppError(404, `No quote available for ${symbol}`)
+  }
+
+  res.json({
+    symbol: quote.symbol,
+    name: quote.longName || quote.shortName || quote.symbol,
+    currentPrice: quote.regularMarketPrice,
+    change: quote.regularMarketChange,
+    changePercent: quote.regularMarketChangePercent,
+    volume: quote.regularMarketVolume,
+    marketCap: quote.marketCap,
+    sector: quote.sector || 'N/A',
+    high: quote.regularMarketDayHigh,
+    low: quote.regularMarketDayLow,
+    open: quote.regularMarketOpen,
+    previousClose: quote.regularMarketPreviousClose
+  })
+}))
+
 module.exports = router
+
