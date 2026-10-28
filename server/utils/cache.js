@@ -41,19 +41,23 @@ const createCache = ({ ttlMs = 60_000, maxEntries = 500 } = {}) => {
       store.delete(key)
     }
 
-    const promise = (async () => {
+    // Keep the entry object as an identity token: clear/remove/set may replace
+    // it while `fn` is still running. A stale promise must not repopulate or
+    // delete the newer entry when it eventually settles.
+    const pending = { promise: null, expires: Date.now() + ttl }
+    pending.promise = (async () => {
       try {
         const value = await fn()
-        set(key, value, ttl)
+        if (store.get(key) === pending) set(key, value, ttl)
         return value
       } catch (error) {
-        store.delete(key)
+        if (store.get(key) === pending) store.delete(key)
         throw error
       }
     })()
 
-    store.set(key, { promise, expires: Date.now() + ttl })
-    return promise
+    store.set(key, pending)
+    return pending.promise
   }
 
   const clear = () => store.clear()

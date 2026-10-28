@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -55,6 +54,6 @@ jobs:
       - name: Build client
         run: npm run build
 
-      # Fails the build on any high or critical advisory in either package.
+      # Fails the build on any high or critical advisory in any Node package.
       - name: Dependency audit gate
         run: npm run audit

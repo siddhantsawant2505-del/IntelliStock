@@ -10,19 +10,20 @@ The project is organized into three main folders:
 React frontend application with modern UI/UX
 - **Framework**: React 18 with Vite
 - **Styling**: Tailwind CSS with custom design system
-- **Routing**: React Router DOM
+- **Routing**: React Router DOM v7 (library mode)
 - **Charts**: Recharts for data visualization
 - **Animations**: Framer Motion
 - **State Management**: Context API
 - **Forms**: React Hook Form
 - **HTTP Client**: Axios
+- **Initial bundle**: route-level lazy-loaded page chunks
 
 ### 📁 server/
 Node.js backend API server
 - **Framework**: Express.js
 - **Database**: MongoDB with Mongoose ODM
 - **Authentication**: JWT with bcryptjs
-- **Security**: Helmet, CORS, Rate limiting
+- **Security**: Helmet, strict CSP, CORS allowlist, rate limiting, request-key validation
 - **Environment**: dotenv configuration
 
 ### 📁 ml-server/
@@ -62,7 +63,7 @@ Python Flask server for AI predictions
 ## 🛠️ Setup Instructions
 
 ### Prerequisites
-- Node.js 18+ and npm
+- Node.js 20.19+ and npm (Vite 7 requires this baseline)
 - Python 3.8+ and pip
 - MongoDB (local or cloud)
 
@@ -78,10 +79,14 @@ npm run dev:server           # API on http://localhost:5000
 npm run dev                  # client on http://localhost:3000
 npm run dev:ml               # optional: ML service on http://localhost:8000
 npm run lint                 # ESLint over client/src and server
+npm test                     # unit + API regression suite (MongoDB required)
+npm run audit                # high/critical dependency advisory gate
 ```
 
 `VITE_API_URL` is optional in development: the Vite dev server proxies `/api`
 to `http://localhost:5000`.
+
+The root `package.json` requires Node 20.19+ (Vite 7's runtime requirement). The client, API and lint commands are run from the root; the ML server remains a separately managed Python service.
 
 ### 1. Client Setup
 ```bash
@@ -174,13 +179,14 @@ The ML server will run on http://localhost:8000
 
 ## 🔐 Security Features
 
-- JWT authentication with secure tokens
-- Password hashing with bcryptjs
-- Rate limiting to prevent abuse
-- Input validation and sanitization
-- CORS configuration
-- Helmet for security headers
-- Environment variable protection
+- JWT authentication with a 32-character minimum secret in production
+- Password hashing with bcryptjs (cost factor 12)
+- Rate limiting to reduce abuse of API and authentication routes
+- Input validation, bounded request sizes, and MongoDB operator-key rejection
+- Strict CORS origin allowlist
+- Helmet security headers and browser CSP
+- `.env` protection and a CI dependency-audit gate
+- API auth lookup cache invalidated immediately on account status changes
 
 ## 📱 Responsive Design
 
@@ -240,11 +246,18 @@ Quote and news lookups go through [yahooFinanceClient.js](server/utils/yahooFina
 
 | Symptom | Root cause | Fix |
 |---------|-----------|-----|
-| `Timeout of 10000ms exceeded` | Provider occasionally takes >10s; no timeout or retry configured | Timeouts, retries with exponential backoff via `p-retry`, and no retry storm on 429 |
+| `Timeout of 10000ms exceeded` | Provider occasionally takes >10s; no timeout or retry configured | A 6-second timeout with a small internal exponential-backoff retry loop; 429s are not retried |
 | `SyntaxError: Unexpected token '<'` | Yahoo returns an HTML error page instead of JSON when rate-limited or blocked | HTML responses are detected and classified instead of being parsed as JSON |
 | `historical()` deprecation warnings | `historical()` is being phased out in `yahoo-finance2` | Replaced with the stable `chart()` API |
 
 The client also applies a TTL cache with in-flight de-duplication so concurrent requests for the same symbol share one upstream call. When Yahoo rate-limits the calling IP, affected endpoints return a clean `503` with a user-facing message rather than a `500`.
+
+## 🔒 Runtime security settings
+
+- Set `CLIENT_ORIGIN` to a comma-separated list of the exact web origins allowed to call the API.
+- Set `JWT_SECRET` to a cryptographically random value of at least 32 characters in production.
+- `AUTH_USER_CACHE_MS` controls the short-lived auth lookup cache (default `5000` ms); set it to `0` to disable. Status changes and account deletion evict cached entries immediately in the current server process; in multi-process deployments, other processes may retain a cached status until the short TTL expires.
+- If the client calls a separate API origin, set `VITE_API_URL` to that API origin at build time. Production builds reject non-HTTPS API origins; the generated CSP allows only that API origin for connections.
 
 ## 🤝 Contributing
 

@@ -61,6 +61,8 @@ test('hasUnsafeKey rejects MongoDB operator and dotted-key syntax', () => {
   assert.equal(hasUnsafeKey({ $where: 'sleep(1000)' }), true)
   assert.equal(hasUnsafeKey({ 'a.b': 'c' }), true)
   assert.equal(hasUnsafeKey({ user: { 'password.$gt': '' } }), true)
+  assert.equal(hasUnsafeKey(JSON.parse('{"__proto__":{"polluted":true}}')), true)
+  assert.equal(hasUnsafeKey({ constructor: { prototype: { polluted: true } } }), true)
   assert.equal(hasUnsafeKey([{ $gt: 1 }]), true)
 })
 
@@ -107,4 +109,28 @@ test('cache serves hits, expires entries and de-duplicates in-flight work', asyn
   cache.set('b', 2)
   cache.set('c', 3)
   assert.ok(cache.size <= 2)
+})
+
+test('cache invalidation wins over a stale in-flight load', async () => {
+  const cache = createCache()
+  let resolveOldLoad
+  const oldLoad = cache.wrap('user:1', () => new Promise((resolve) => {
+    resolveOldLoad = resolve
+  }))
+
+  cache.remove('user:1')
+  cache.set('user:1', { status: 'banned' })
+  resolveOldLoad({ status: 'active' })
+  await oldLoad
+
+  assert.deepEqual(cache.get('user:1'), { status: 'banned' })
+
+  let resolveBeforeClear
+  const beforeClear = cache.wrap('user:2', () => new Promise((resolve) => {
+    resolveBeforeClear = resolve
+  }))
+  cache.clear()
+  resolveBeforeClear({ status: 'active' })
+  await beforeClear
+  assert.equal(cache.get('user:2'), undefined)
 })

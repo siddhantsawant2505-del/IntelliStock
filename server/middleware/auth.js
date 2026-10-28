@@ -14,8 +14,18 @@ const { createCache } = require('../utils/cache')
  * entry immediately, so revocation never waits for the TTL. `AUTH_USER_CACHE_MS`
  * tunes the window; set it to 0 to disable caching entirely.
  */
-const USER_CACHE_TTL_MS = Number(process.env.AUTH_USER_CACHE_MS) || 5000
+const configuredCacheTtl = process.env.AUTH_USER_CACHE_MS
+const parsedCacheTtl = configuredCacheTtl === undefined || configuredCacheTtl === ''
+  ? 5000
+  : Number(configuredCacheTtl)
+const USER_CACHE_TTL_MS = Number.isFinite(parsedCacheTtl) ? Math.max(0, parsedCacheTtl) : 5000
 const userCache = createCache({ ttlMs: USER_CACHE_TTL_MS, maxEntries: 2000 })
+
+const deepFreeze = (value) => {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Object.values(value).forEach(deepFreeze)
+  return Object.freeze(value)
+}
 
 const findAuthUser = (userId) => {
   if (USER_CACHE_TTL_MS <= 0) {
@@ -54,9 +64,11 @@ const auth = async (req, res, next) => {
       return res.status(403).json({ message: 'Account has been banned' })
     }
 
-    // Frozen so a route cannot mutate the shared cached object and poison it
-    // for every later request.
-    req.user = Object.freeze(user)
+    // Return a request-local copy so routes cannot poison the shared cache.
+    // Copy nested user data too: a shallow freeze would still share mutable
+    // watchlist/prediction objects with future requests.
+    const requestUser = structuredClone({ ...user, _id: String(user._id) })
+    req.user = deepFreeze(requestUser)
     next()
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {

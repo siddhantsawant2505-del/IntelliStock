@@ -10,6 +10,9 @@ process.env.CLIENT_ORIGIN = 'http://localhost:3000'
 
 const TEST_MONGO_URI = process.env.TEST_MONGODB_URI || 'mongodb://127.0.0.1:27017/intellistock_test'
 const ALLOWED_ORIGIN = 'http://localhost:3000'
+const TEST_RUN_ID = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const TEST_ADMIN_EMAIL = `admin-${TEST_RUN_ID}@test.dev`
+const TEST_USER_EMAIL = `user-${TEST_RUN_ID}@test.dev`
 
 const { createApp } = require('../app')
 const User = require('../models/User')
@@ -54,10 +57,8 @@ const login = async (email, password) => {
 
 test.before(async () => {
   await mongoose.connect(TEST_MONGO_URI, { serverSelectionTimeoutMS: 5000 })
-  await User.deleteMany({})
-
-  await User.create({ name: 'Admin User', email: 'admin@test.dev', password: 'password123', role: 'admin' })
-  const regular = await User.create({ name: 'Regular User', email: 'user@test.dev', password: 'password123' })
+  await User.create({ name: 'Admin User', email: TEST_ADMIN_EMAIL, password: 'password123', role: 'admin' })
+  const regular = await User.create({ name: 'Regular User', email: TEST_USER_EMAIL, password: 'password123' })
   userId = String(regular._id)
 
   const app = createApp()
@@ -65,8 +66,8 @@ test.before(async () => {
   await new Promise((resolve) => server.once('listening', resolve))
   baseUrl = `http://127.0.0.1:${server.address().port}`
 
-  adminToken = await login('admin@test.dev', 'password123')
-  userToken = await login('user@test.dev', 'password123')
+  adminToken = await login(TEST_ADMIN_EMAIL, 'password123')
+  userToken = await login(TEST_USER_EMAIL, 'password123')
 
   return { app }
 })
@@ -74,7 +75,7 @@ test.before(async () => {
 test.after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve))
   if (mongoose.connection.readyState === 1) {
-    await User.deleteMany({})
+    await User.deleteMany({ email: { $in: [TEST_ADMIN_EMAIL, TEST_USER_EMAIL] } })
     await mongoose.connection.close()
   }
 })
@@ -165,11 +166,11 @@ test('MongoDB operator syntax in the body is rejected', async () => {
 test('login never reveals whether an account exists', async () => {
   const unknown = await request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'nobody@test.dev', password: 'password123' })
+    body: JSON.stringify({ email: `nobody-${TEST_RUN_ID}@test.dev`, password: 'password123' })
   })
   const wrongPassword = await request('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email: 'user@test.dev', password: 'wrong-password' })
+    body: JSON.stringify({ email: TEST_USER_EMAIL, password: 'wrong-password' })
   })
 
   assert.equal(unknown.status, 401)
@@ -187,7 +188,7 @@ test('protected routes reject missing and malformed tokens', async () => {
 
   const valid = await request('/api/auth/me', { token: userToken })
   assert.equal(valid.status, 200)
-  assert.equal(valid.data.email, 'user@test.dev')
+  assert.equal(valid.data.email, TEST_USER_EMAIL)
   // The password hash must never travel to the client.
   assert.equal(valid.data.password, undefined)
 })
@@ -196,7 +197,7 @@ test('profile responses never include the password hash', async () => {
   const response = await request('/api/users/profile', { token: userToken })
   assert.equal(response.status, 200)
   assert.equal(response.data.password, undefined)
-  assert.equal(response.data.email, 'user@test.dev')
+  assert.equal(response.data.email, TEST_USER_EMAIL)
 })
 
 test('admin routes refuse non-admin callers', async () => {
@@ -214,7 +215,7 @@ test('admin routes refuse non-admin callers', async () => {
 })
 
 test('an admin cannot ban or delete their own account', async () => {
-  const admin = await User.findOne({ email: 'admin@test.dev' })
+  const admin = await User.findOne({ email: TEST_ADMIN_EMAIL })
 
   const ban = await request(`/api/admin/users/${admin._id}/status`, {
     method: 'PUT',

@@ -16,15 +16,24 @@ const DEFAULT_CLIENT_ORIGIN = 'http://localhost:3000'
 // so `{ email: { "$ne": null } }` would otherwise become a real query. Every
 // route already coerces its inputs to strings, but rejecting the syntax here
 // means a future route cannot reintroduce operator injection by accident.
-const UNSAFE_KEY = /^\$/
-const hasDot = (key) => key.includes('.')
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+const isUnsafeKey = (key) => key.startsWith('$') || key.includes('.') || UNSAFE_KEYS.has(key)
 
-const hasUnsafeKey = (value) => {
-  if (!value || typeof value !== 'object') return false
-  if (Array.isArray(value)) return value.some(hasUnsafeKey)
-  return Object.entries(value).some(
-    ([key, child]) => UNSAFE_KEY.test(key) || hasDot(key) || hasUnsafeKey(child)
-  )
+// Iterative traversal avoids a stack overflow from deeply nested JSON bodies.
+const hasUnsafeKey = (root) => {
+  const pending = [root]
+
+  while (pending.length > 0) {
+    const value = pending.pop()
+    if (!value || typeof value !== 'object') continue
+
+    for (const [key, child] of Object.entries(value)) {
+      if (isUnsafeKey(key)) return true
+      if (child && typeof child === 'object') pending.push(child)
+    }
+  }
+
+  return false
 }
 
 const rejectUnsafeKeys = (req, res, next) => {
