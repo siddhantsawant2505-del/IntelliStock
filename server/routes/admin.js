@@ -2,7 +2,7 @@ const express = require('express')
 const mongoose = require('mongoose')
 const User = require('../models/User')
 const Stock = require('../models/Stock')
-const { adminAuth } = require('../middleware/auth')
+const { adminAuth, invalidateAuthUser } = require('../middleware/auth')
 const { asyncHandler, AppError } = require('../utils/http')
 const { parseIntInRange, escapeRegex } = require('../utils/validate')
 
@@ -113,6 +113,10 @@ router.put('/users/:userId/status', adminAuth, asyncHandler(async (req, res) => 
     throw new AppError(404, 'User not found')
   }
 
+  // Banning must take effect on the account's very next request, not when the
+  // auth cache happens to expire.
+  invalidateAuthUser(userId)
+
   res.json({ message: 'User status updated', user })
 }))
 
@@ -127,6 +131,8 @@ router.delete('/users/:userId', adminAuth, asyncHandler(async (req, res) => {
   if (!user) {
     throw new AppError(404, 'User not found')
   }
+
+  invalidateAuthUser(userId)
 
   res.json({ message: 'User deleted successfully' })
 }))

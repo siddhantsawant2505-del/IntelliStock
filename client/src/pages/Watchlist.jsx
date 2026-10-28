@@ -7,23 +7,41 @@ import {
   TrendingDown,
   Trash2,
   Plus,
-  Search,
-  BarChart3,
-  X
+  BarChart3
 } from 'lucide-react'
-import api, { getErrorMessage } from '../lib/api'
-import StockChart from '../components/Charts/StockChart'
 import toast from 'react-hot-toast'
+import api, { getErrorMessage } from '../lib/api'
+import { formatPercent } from '../lib/format'
+import StockChart from '../components/Charts/StockChart'
+import AddStockModal from '../features/watchlist/AddStockModal'
+
+const getPredictionColor = (prediction) => {
+  switch (prediction) {
+    case 'Buy':
+      return 'text-green-400 bg-green-900/30'
+    case 'Sell':
+      return 'text-red-400 bg-red-900/30'
+    default:
+      return 'text-yellow-400 bg-yellow-900/30'
+  }
+}
+
+const getSentimentColor = (sentiment) => {
+  switch (sentiment) {
+    case 'Positive':
+      return 'text-green-400'
+    case 'Negative':
+      return 'text-red-400'
+    default:
+      return 'text-gray-400'
+  }
+}
 
 const Watchlist = () => {
   const [watchlist, setWatchlist] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [searchTerm, setSearchTerm] = useState('')
-  const [searchResults, setSearchResults] = useState([])
-  const [searchLoading, setSearchLoading] = useState(false)
-  const [adding, setAdding] = useState('')
   const navigate = useNavigate()
 
   const fetchWatchlist = useCallback(async () => {
@@ -48,63 +66,9 @@ const Watchlist = () => {
     fetchWatchlist()
   }, [fetchWatchlist])
 
-  // Debounced symbol search for the add dialog, with a guard so a slow earlier
-  // response cannot overwrite results for a newer query.
-  useEffect(() => {
-    const term = searchTerm.trim()
-    if (term.length < 2) {
-      setSearchResults([])
-      setSearchLoading(false)
-      return undefined
-    }
-
-    let cancelled = false
-    setSearchLoading(true)
-
-    const timer = setTimeout(async () => {
-      try {
-        const { data } = await api.get(`/stocks/search/${encodeURIComponent(term)}`)
-        if (!cancelled) setSearchResults(data)
-      } catch (error) {
-        if (!cancelled) {
-          setSearchResults([])
-          toast.error(getErrorMessage(error, 'Search failed'))
-        }
-      } finally {
-        if (!cancelled) setSearchLoading(false)
-      }
-    }, 400)
-
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [searchTerm])
-
-  useEffect(() => {
-    if (!showAddModal) return undefined
-
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') setShowAddModal(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [showAddModal])
-
-  const addStock = async (stock) => {
-    setAdding(stock.symbol)
-    try {
-      await api.post('/users/watchlist', { symbol: stock.symbol, name: stock.name })
-      toast.success(`${stock.symbol} added to watchlist`)
-      setShowAddModal(false)
-      setSearchTerm('')
-      setSearchResults([])
-      await fetchWatchlist()
-    } catch (error) {
-      toast.error(getErrorMessage(error, 'Failed to add stock'))
-    } finally {
-      setAdding('')
-    }
+  const handleAdded = async () => {
+    setShowAddModal(false)
+    await fetchWatchlist()
   }
 
   const removeFromWatchlist = async (symbol) => {
@@ -119,28 +83,6 @@ const Watchlist = () => {
       toast.success('Stock removed from watchlist')
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to remove stock'))
-    }
-  }
-
-  const getPredictionColor = (prediction) => {
-    switch (prediction) {
-      case 'Buy':
-        return 'text-green-400 bg-green-900/30'
-      case 'Sell':
-        return 'text-red-400 bg-red-900/30'
-      default:
-        return 'text-yellow-400 bg-yellow-900/30'
-    }
-  }
-
-  const getSentimentColor = (sentiment) => {
-    switch (sentiment) {
-      case 'Positive':
-        return 'text-green-400'
-      case 'Negative':
-        return 'text-red-400'
-      default:
-        return 'text-gray-400'
     }
   }
 
@@ -241,7 +183,7 @@ const Watchlist = () => {
                                     <span>{stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}</span>
                                   </div>
                                   <div className="text-sm">
-                                    ({stock.changePercent >= 0 ? '+' : ''}{stock.changePercent.toFixed(2)}%)
+                                    ({formatPercent(stock.changePercent, { signed: true })})
                                   </div>
                                 </div>
                               )}
@@ -324,13 +266,13 @@ const Watchlist = () => {
                     <div className="card">
                       <h4 className="text-lg font-semibold text-white mb-4">AI Prediction</h4>
                       <div className="space-y-4">
-                        <div className="flex items-center justify-between">
+                        <div className="flex justify-between">
                           <span className="text-gray-400">Recommendation</span>
                           <span className={`px-3 py-1 rounded-full text-sm font-medium ${getPredictionColor(selectedStock.prediction)}`}>
                             {selectedStock.prediction}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between">
+                        <div className="flex justify-between">
                           <span className="text-gray-400">Confidence</span>
                           <span className="text-white font-semibold">{selectedStock.confidence}%</span>
                         </div>
@@ -373,79 +315,12 @@ const Watchlist = () => {
         </motion.div>
       </div>
 
-      {showAddModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="add-stock-title"
-          onClick={() => setShowAddModal(false)}
-        >
-          <div
-            className="card w-full max-w-md"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h3 id="add-stock-title" className="text-lg font-semibold text-white">Add a stock</h3>
-              <button
-                onClick={() => setShowAddModal(false)}
-                aria-label="Close add stock dialog"
-                className="text-gray-400 hover:text-white"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="relative mb-4">
-              <Search className="absolute left-3 top-3 h-5 w-5 text-gray-400" />
-              <input
-                autoFocus
-                type="text"
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search by symbol or company name"
-                className="w-full pl-10 pr-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500"
-              />
-            </div>
-
-            <div className="space-y-2 max-h-72 overflow-y-auto">
-              {searchLoading ? (
-                <div className="flex justify-center py-6">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
-                </div>
-              ) : searchTerm.trim().length < 2 ? (
-                <p className="text-gray-400 text-sm text-center py-6">
-                  Type at least two characters to search.
-                </p>
-              ) : searchResults.length === 0 ? (
-                <p className="text-gray-400 text-sm text-center py-6">No matching stocks found.</p>
-              ) : (
-                searchResults.map((stock) => {
-                  const alreadyAdded = watchlist.some((entry) => entry.symbol === stock.symbol)
-                  return (
-                    <div
-                      key={stock.symbol}
-                      className="flex items-center justify-between p-3 bg-gray-700 rounded-lg"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-semibold text-white">{stock.symbol}</div>
-                        <div className="text-sm text-gray-400 truncate">{stock.name}</div>
-                      </div>
-                      <button
-                        onClick={() => addStock(stock)}
-                        disabled={alreadyAdded || adding === stock.symbol}
-                        className="ml-3 px-3 py-1 rounded text-sm font-medium bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {alreadyAdded ? 'Added' : adding === stock.symbol ? 'Adding…' : 'Add'}
-                      </button>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <AddStockModal
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        watchlist={watchlist}
+        onAdd={handleAdded}
+      />
     </div>
   )
 }

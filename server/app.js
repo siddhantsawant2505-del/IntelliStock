@@ -12,18 +12,52 @@ const { AppError } = require('./utils/http')
 
 const DEFAULT_CLIENT_ORIGIN = 'http://localhost:3000'
 
-const parseOrigins = (value) =>
-  String(value || DEFAULT_CLIENT_ORIGIN)
+// MongoDB treats a leading "$" in a value or a "." in a key as query syntax,
+// so `{ email: { "$ne": null } }` would otherwise become a real query. Every
+// route already coerces its inputs to strings, but rejecting the syntax here
+// means a future route cannot reintroduce operator injection by accident.
+const UNSAFE_KEY = /^\$/
+const hasDot = (key) => key.includes('.')
+
+const hasUnsafeKey = (value) => {
+  if (!value || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(hasUnsafeKey)
+  return Object.entries(value).some(
+    ([key, child]) => UNSAFE_KEY.test(key) || hasDot(key) || hasUnsafeKey(child)
+  )
+}
+
+const rejectUnsafeKeys = (req, res, next) => {
+  if (hasUnsafeKey(req.body) || hasUnsafeKey(req.query) || hasUnsafeKey(req.params)) {
+    return res.status(400).json({ message: 'Request contains invalid parameter names' })
+  }
+  next()
+}
+
+const parseOrigins = (value) => {
+  const origins = String(value || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean)
+
+  // A blank or malformed CLIENT_ORIGIN must not silently deny every browser
+  // origin; fall back to the local default rather than an empty allowlist.
+  return origins.length > 0 ? origins : [DEFAULT_CLIENT_ORIGIN]
+}
 
 const createApp = () => {
   const app = express()
   const allowedOrigins = parseOrigins(process.env.CLIENT_ORIGIN)
 
   app.disable('x-powered-by')
-  app.use(helmet())
+  app.use(helmet({
+    // This server only emits JSON, so no origin should ever be allowed to
+    // load anything from it as a page, style or script.
+    contentSecurityPolicy: { directives: { defaultSrc: ["'none'"] } },
+    // Nothing here is embeddable, so deny framing outright.
+    frameguard: { action: 'deny' },
+    crossOriginResourcePolicy: { policy: 'same-site' }
+  }))
 
   app.use(cors({
     origin: (origin, callback) => {
@@ -39,6 +73,10 @@ const createApp = () => {
 
   app.use(express.json({ limit: '1mb' }))
   app.use(express.urlencoded({ extended: true, limit: '1mb' }))
+
+  // After the body parsers: the syntax this rejects only exists once JSON has
+  // been parsed into objects.
+  app.use(rejectUnsafeKeys)
 
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -115,4 +153,4 @@ const createApp = () => {
   return app
 }
 
-module.exports = { createApp, parseOrigins }
+module.exports = { createApp, parseOrigins, hasUnsafeKey }

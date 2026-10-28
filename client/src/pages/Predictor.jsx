@@ -1,56 +1,23 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Search, TrendingUp, Brain, Star } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import StockChart from '../components/Charts/StockChart'
 import toast from 'react-hot-toast'
 import api, { getErrorMessage } from '../lib/api'
+import { useStockSearch } from '../hooks/useStockSearch'
 
 const Predictor = () => {
-  const [searchTerm, setSearchTerm] = useState('')
   const [selectedStock, setSelectedStock] = useState(null)
   const [predictionDays, setPredictionDays] = useState(1)
   const [prediction, setPrediction] = useState(null)
   const [loading, setLoading] = useState(false)
   const [historicalData, setHistoricalData] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [stocks, setStocks] = useState([])
-  const [searchLoading, setSearchLoading] = useState(false)
 
   const location = useLocation()
-  const latestQuery = useRef('')
-
-  const searchStocks = async (term) => {
-    try {
-      setSearchLoading(true)
-      const { data } = await api.get(`/stocks/search/${encodeURIComponent(term)}`)
-      // Drop responses that belong to a query the user has already replaced.
-      if (term === latestQuery.current) setStocks(data)
-    } catch (error) {
-      if (term === latestQuery.current) {
-        setStocks([])
-        toast.error(getErrorMessage(error, 'Failed to search stocks'))
-      }
-    } finally {
-      if (term === latestQuery.current) setSearchLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    const term = searchTerm.trim()
-    latestQuery.current = term
-
-    if (term.length < 2) {
-      setStocks([])
-      setSearchLoading(false)
-      return undefined
-    }
-
-    const delaySearch = setTimeout(() => {
-      searchStocks(term)
-    }, 400)
-    return () => clearTimeout(delaySearch)
-  }, [searchTerm])
+  // Debounced, stale-guarded symbol search shared with the watchlist dialog.
+  const search = useStockSearch({ errorMessage: 'Failed to search stocks' })
 
   // Deep link from the watchlist: "Run AI Prediction" passes the symbol along.
   useEffect(() => {
@@ -99,7 +66,7 @@ const Predictor = () => {
 
   const handleStockSelect = (stock) => {
     setSelectedStock(stock)
-    setSearchTerm('')
+    search.clear()
     setPrediction(null)
     fetchHistoricalData(stock.symbol)
   }
@@ -171,20 +138,20 @@ const Predictor = () => {
                   <input
                     type="text"
                     placeholder="Search by symbol or name..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    value={search.term}
+                    onChange={(e) => search.setTerm(e.target.value)}
                     className="w-full pl-10 pr-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500"
                   />
                 </div>
 
-                {searchTerm && (
+                {search.term && (
                   <div className="space-y-2 mb-4">
-                    {searchLoading ? (
+                    {search.loading ? (
                       <div className="text-center py-4">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500 mx-auto"></div>
                       </div>
-                    ) : stocks.length > 0 ? (
-                      stocks.map((stock) => (
+                    ) : search.results.length > 0 ? (
+                      search.results.map((stock) => (
                         <button
                           key={stock.symbol}
                           onClick={() => handleStockSelect(stock)}

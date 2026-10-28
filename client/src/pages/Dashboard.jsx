@@ -12,9 +12,7 @@ import {
 import api, { getErrorMessage } from '../lib/api'
 import StockChart from '../components/Charts/StockChart'
 import { useAuth } from '../contexts/AuthContext'
-
-const formatCurrency = (value) =>
-  `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+import { formatCurrency } from '../lib/format'
 
 const Dashboard = () => {
   const { user } = useAuth()

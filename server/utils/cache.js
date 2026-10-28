@@ -58,7 +58,10 @@ const createCache = ({ ttlMs = 60_000, maxEntries = 500 } = {}) => {
 
   const clear = () => store.clear()
 
-  return { get, set, wrap, clear, get size() { return store.size } }
+  /** Removes a single entry, so a cache can be invalidated on write. */
+  const remove = (key) => store.delete(key)
+
+  return { get, set, wrap, clear, remove, get size() { return store.size } }
 }
 
 module.exports = { createCache }

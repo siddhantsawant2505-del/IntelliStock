@@ -234,6 +234,18 @@ cd ml-server
 - Paper trading simulation
 - Advanced charting tools
 
+## 🔧 Troubleshooting Yahoo Finance Data
+
+Quote and news lookups go through [yahooFinanceClient.js](server/utils/yahooFinanceClient.js), a wrapper that makes `yahoo-finance2` resilient. Three failure modes were diagnosed and fixed here:
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| `Timeout of 10000ms exceeded` | Provider occasionally takes >10s; no timeout or retry configured | Timeouts, retries with exponential backoff via `p-retry`, and no retry storm on 429 |
+| `SyntaxError: Unexpected token '<'` | Yahoo returns an HTML error page instead of JSON when rate-limited or blocked | HTML responses are detected and classified instead of being parsed as JSON |
+| `historical()` deprecation warnings | `historical()` is being phased out in `yahoo-finance2` | Replaced with the stable `chart()` API |
+
+The client also applies a TTL cache with in-flight de-duplication so concurrent requests for the same symbol share one upstream call. When Yahoo rate-limits the calling IP, affected endpoints return a clean `503` with a user-facing message rather than a `500`.
+
 ## 🤝 Contributing
 
 1. Fork the repository

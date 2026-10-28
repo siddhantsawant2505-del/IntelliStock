@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "install:all": "npm install && npm --prefix client install && npm --prefix server install",
@@ -15,32 +15,16 @@
     "dev:server": "npm --prefix server run dev",
     "dev:ml": "python ml-server/app.py",
     "seed": "npm --prefix server run seed",
-    "lint": "eslint client/src server"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.20.1",
-    "axios": "^1.6.2",
-    "recharts": "^2.8.0",
-    "framer-motion": "^10.16.16",
-    "react-hook-form": "^7.48.2",
-    "lucide-react": "^0.294.0",
-    "react-hot-toast": "^2.4.1"
+    "lint": "eslint client/src server",
+    "test": "npm --prefix server test",
+    "audit": "npm audit --prefix client --audit-level=high && npm audit --prefix server --audit-level=high"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
-    "@types/react": "^18.2.37",
-    "@types/react-dom": "^18.2.15",
-    "@vitejs/plugin-react": "^4.1.1",
-    "autoprefixer": "^10.4.16",
     "eslint": "^9.15.0",
     "eslint-plugin-react": "^7.37.2",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
-    "globals": "^15.12.0",
-    "postcss": "^8.4.32",
-    "tailwindcss": "^3.3.6",
-    "vite": "^5.0.0"
+    "globals": "^15.12.0"
   }
 }

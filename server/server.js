@@ -15,6 +15,14 @@ if (missing.length > 0) {
 }
 
 if (process.env.JWT_SECRET.length < 32) {
+  if (process.env.NODE_ENV === 'production') {
+    // A short or guessable secret lets anyone mint a valid token for any user.
+    console.error(
+      'JWT_SECRET must be at least 32 characters long in production. ' +
+      'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"'
+    )
+    process.exit(1)
+  }
   console.warn('Warning: JWT_SECRET should be at least 32 characters long for real deployments.')
 }
 

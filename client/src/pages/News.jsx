@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Newspaper, TrendingUp, TrendingDown, Clock, ExternalLink } from 'lucide-react'
 import api, { getErrorMessage } from '../lib/api'
 import toast from 'react-hot-toast'
+import { formatRelativeTime } from '../lib/format'
 
 const News = () => {
   const [news, setNews] = useState([])
@@ -77,16 +78,6 @@ const News = () => {
       default:
         return 'border-gray-500/30 bg-gray-800/20'
     }
-  }
-
-  const formatTime = (timestamp) => {
-    const date = new Date(timestamp)
-    const now = new Date()
-    const diffInHours = Math.floor((now - date) / (1000 * 60 * 60))
-    
-    if (diffInHours < 1) return 'Just now'
-    if (diffInHours < 24) return `${diffInHours}h ago`
-    return date.toLocaleDateString()
   }
 
   return (
@@ -168,7 +159,7 @@ const News = () => {
                             <span className="text-gray-600">•</span>
                             <div className="flex items-center space-x-1 text-sm text-gray-400">
                               <Clock className="h-4 w-4" />
-                              <span>{formatTime(item.timestamp)}</span>
+                              <span>{formatRelativeTime(item.timestamp)}</span>
                             </div>
                           </div>
                           <a

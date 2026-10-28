@@ -1,7 +1,7 @@
 const express = require('express')
 const createYahooFinanceClient = require('../utils/yahooFinanceClient')
 const User = require('../models/User')
-const { auth } = require('../middleware/auth')
+const { auth, invalidateAuthUser } = require('../middleware/auth')
 const { asyncHandler, AppError } = require('../utils/http')
 const { parseSymbol } = require('../utils/validate')
 
@@ -56,6 +56,7 @@ router.put('/profile', auth, asyncHandler(async (req, res) => {
   }
 
   await user.save()
+  invalidateAuthUser(user._id)
   res.json({ message: 'Profile updated successfully', user })
 }))
 
